@@ -1,0 +1,28 @@
+# 使用 Ultralytics 官方針對 JetPack 6 最佳化的 Image (內建 GPU PyTorch, TensorRT, YOLOv8)
+FROM ultralytics/ultralytics:latest-jetson-jetpack6
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 1. 加入 ROS 2 Humble 官方金鑰與軟體源
+RUN apt-get update && apt-get upgrade -y && apt-get install -y curl gnupg2 && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+# 2. 安裝 ROS 2 核心與視覺相關套件
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+    ros-humble-ros-base \
+    ros-humble-cv-bridge \
+    ros-humble-message-filters \
+    && rm -rf /var/lib/apt/lists/*
+
+# 3. 解決 cv_bridge 惱人的 NumPy 2.0 衝突
+RUN pip3 install --no-cache-dir "numpy<2"
+
+# 4. 寫入 source 環境變數，確保終端機隨時可用 ros2 指令
+RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+RUN echo "source /ros2_ws/install/local_setup.bash || true" >> ~/.bashrc
+
+# 5. 設定工作目錄
+WORKDIR /ros2_ws
+
+CMD ["bash"]

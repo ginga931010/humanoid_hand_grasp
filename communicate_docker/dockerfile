@@ -1,0 +1,42 @@
+# 官方 ROS 2 映像檔支援多架構，在 Orin Nano 上會自動拉取 ARM64 (aarch64) 版本
+FROM ros:humble-ros-base-jammy
+
+# 設定環境變數避免 apt 安裝時跳出互動式對話框卡住
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 1. 更新系統並安裝基礎工具與 RealSense ROS 2 套件
+# 嚴格遵守不使用 Snap 的原則，全數依賴 apt 與源碼
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+    curl git build-essential \
+    python3-pip python3-rosdep python3-colcon-common-extensions \
+    ros-humble-realsense2-camera \
+    ros-humble-realsense2-description \
+    && rm -rf /var/lib/apt/lists/*
+
+# 初始化並更新 rosdep
+RUN rosdep init || true
+RUN rosdep update
+
+# 2. 建置 micro-ROS 工作區並下載原始碼
+WORKDIR /uros_ws
+RUN git clone -b humble https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup
+
+# 安裝 micro-ROS 依賴並編譯 setup 工具
+RUN apt-get update && apt-get upgrade -y && \
+    rosdep install --from-paths src --ignore-src -y && \
+    rm -rf /var/lib/apt/lists/*
+RUN /bin/bash -c "source /opt/ros/humble/setup.sh && colcon build"
+
+# 3. 建立並編譯 micro-ROS Agent (這一步會花一點時間編譯核心庫)
+RUN /bin/bash -c "source /opt/ros/humble/setup.sh && source install/local_setup.sh && \
+    ros2 run micro_ros_setup create_agent_ws.sh && \
+    ros2 run micro_ros_setup build_agent.sh"
+RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+RUN echo "source /uros_ws/install/local_setup.bash" >> ~/.bashrc
+
+# 4. 複製啟動腳本並賦予執行權限
+COPY entrypoint.sh /
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

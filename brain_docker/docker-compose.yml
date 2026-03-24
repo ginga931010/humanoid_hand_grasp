@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  brain_service:
+    image: brain_image:latest
+    container_name: brain_docker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 使用 host 網路模式，無縫接收硬體 Container 的 ROS 2 Topic
+    network_mode: "host"
+    privileged: true
+    ipc: host    # 打破共用記憶體隔離，讓 Fast DDS 能傳輸影像（絕對關鍵！）
+    pid: host    # 共用行程空間，幫助 DDS 更穩定地互相探索
+    stop_grace_period: 1s
+    # 同步主機時間，避免 TF 樹和 Message Filters 時間對不上
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./ros2_ws/src:/ros2_ws/src
+    environment:
+      - ROS_DOMAIN_ID=0  # 必須與硬體 Container 相同
+    # 【關鍵】：允許 Container 存取 NVIDIA GPU (JetPack 6.2 支援此標準寫法)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    tty: true
+    stdin_open: true

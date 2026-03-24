@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  communicate_service:  # 這裡也可以順便改成你喜歡的服務名稱
+    image: communicate_image:latest   # 【關鍵新增】強制指定編譯出來的 Image 名字
+    container_name: communicate_docker # 這是運行起來的 Container 名字
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "host"
+    ipc: host    # 打破共用記憶體隔離，讓 Fast DDS 能傳輸影像（絕對關鍵！）
+    pid: host    # 共用行程空間，幫助 DDS 更穩定地互相探索
+    privileged: true
+    stop_grace_period: 1s
+    volumes:
+      - /dev:/dev
+      - /etc/localtime:/etc/localtime:ro
+      - ./ros2_ws:/ros2_ws
+    working_dir: /ros2_ws
+    environment:
+      - ROS_DOMAIN_ID=0  # 確保與之後的 AI Container 在同一個 DDS 網域
+    command: >
+      bash -c "ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyACM0 -b 921600 & 
+               ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true"
+    tty: true
+    stdin_open: true
