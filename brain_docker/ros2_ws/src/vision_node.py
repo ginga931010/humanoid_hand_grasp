@@ -18,11 +18,11 @@ class VisionNode(Node):
         self.bridge = CvBridge()
         
         # --- 1. 載入 YOLOv8 模型 (Jetson 效能優化版) ---
-        engine_path = 'yolov8n.engine'
+        engine_path = 'yolov8n-1.engine'
         if not os.path.exists(engine_path):
             self.get_logger().info("🚀 初次在 Jetson 運行，正在將 YOLO 模型轉換為 TensorRT 格式...")
             self.get_logger().info("⏳ 這可能需要 10 ~ 20 分鐘，請耐心等候，只需執行一次！")
-            temp_model = YOLO('yolov8n.pt')
+            temp_model = YOLO('yolov8n-1.pt')
             temp_model.export(format='engine', half=True, workspace=2)
             self.get_logger().info("✅ 模型轉換完成！")
             
