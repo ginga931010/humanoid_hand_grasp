@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import Point
+from std_msgs.msg import Int32  # 👈 [新增] 匯入 Int32 訊息格式
 from cv_bridge import CvBridge
 import message_filters
 
@@ -12,6 +13,7 @@ import os
 from ultralytics import YOLO
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+
 class VisionNode(Node):
     def __init__(self):
         super().__init__('vision_processing_node')
@@ -34,53 +36,39 @@ class VisionNode(Node):
         self.intrinsics_ready = False
 
         # --- 3. 建立訂閱器 (Subscribers) ---
-        # 1. 訂閱相機內參 (加入 QoS)
         best_effort_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
 
-        # 1. 訂閱相機內參 (套用自訂 QoS)
         self.info_sub = self.create_subscription(
             CameraInfo,
-            '/camera/camera/color/camera_info',  # ← 這裡修改
+            '/camera/camera/color/camera_info',
             self.camera_info_callback,
             10
         )
 
-        # 2. 建立影像同步訂閱器
+        # 建立影像同步訂閱器
         color_sub = message_filters.Subscriber(
-            self, Image, '/camera/camera/color/image_raw'  # ← 這裡修改
+            self, Image, '/camera/camera/color/image_raw'
         )
         depth_sub = message_filters.Subscriber(
-            self, Image, '/camera/camera/aligned_depth_to_color/image_raw'  # ← 這裡修改
+            self, Image, '/camera/camera/aligned_depth_to_color/image_raw'
         )
-        # self.info_sub = self.create_subscription(
-        #     CameraInfo,
-        #     '/camera/camera/color/camera_info',
-        #     self.camera_info_callback,
-        #     best_effort_qos
-        # )
-
-        # # 2. 建立影像同步訂閱器 (套用自訂 QoS)
-        # color_sub = message_filters.Subscriber(
-        #     self, Image, '/camera/camera/color/image_raw', qos_profile=best_effort_qos
-        # )
-        # depth_sub = message_filters.Subscriber(
-        #     self, Image, '/camera/camera/aligned_depth_to_color/image_raw', qos_profile=best_effort_qos
-        # )
         
-        # 使用近似時間同步器，稍微將容許誤差 slop 從 0.05 放寬到 0.1 秒
+        # 使用近似時間同步器
         self.ts = message_filters.ApproximateTimeSynchronizer([color_sub, depth_sub], queue_size=10, slop=0.1)
         self.ts.registerCallback(self.sync_callback)
         
-
         # --- 4. 建立發布器 (Publishers) ---
         # 發布 3D 座標給你的 RL 強化學習節點
         self.target_pub = self.create_publisher(Point, '/target_3d_position', 10)
         
-        # 額外發布標註好的影像 (方便你在主機端用 rqt_image_view 觀看，免去 Docker 顯示 UI 的麻煩)
+        # 👈 [新增] 發布物體類別 ID 給 RL 節點
+        self.obj_type_pub = self.create_publisher(Int32, '/object_type_id', 10)
+        
+        # 額外發布標註好的影像
         self.debug_img_pub = self.create_publisher(Image, '/vision/debug_image', 10)
 
         self.get_logger().info("🎯 視覺處理節點已啟動，等待 RealSense 影像輸入...")
@@ -92,11 +80,9 @@ class VisionNode(Node):
             self.fy = msg.k[4]
             self.cy = msg.k[5]
             self.intrinsics_ready = True
-            # 加入這行綠色大字，確認我們真的有收到內參
             self.get_logger().info(f"✅ 已成功取得相機內參: fx={self.fx:.2f}, fy={self.fy:.2f}")
 
     def sync_callback(self, color_msg, depth_msg):
-        # 只要有一組影像同步進來，就印出這行
         self.get_logger().info("🔄 收到一組同步影像！正在檢查內參...")
         
         if not self.intrinsics_ready:
@@ -105,7 +91,6 @@ class VisionNode(Node):
 
         # 將 ROS 影像轉換為 OpenCV 格式
         color_image = self.bridge.imgmsg_to_cv2(color_msg, "bgr8")
-        # 深度影像格式通常為 16-bit，單位是毫米 (mm)
         depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "16UC1")
 
         # 執行 YOLO 推論
@@ -124,33 +109,42 @@ class VisionNode(Node):
 
                 # 確保座標在深度影像範圍內
                 if 0 <= u < depth_image.shape[1] and 0 <= v < depth_image.shape[0]:
-                    # 獲取深度 (距離)，單位轉為公尺
                     dist_mm = depth_image[v, u]
                     if dist_mm == 0:
-                        continue # 深度為 0 代表該點無效
+                        continue
                     
                     z_3d = dist_mm / 1000.0
-
-                    # --- 2D 像素轉 3D 空間座標 (替代 rs2_deproject_pixel_to_point) ---
-                    # 這是標準的針孔相機幾何運算
                     x_3d = (u - self.cx) * z_3d / self.fx
                     y_3d = (v - self.cy) * z_3d / self.fy
 
-                    # 發布 3D 座標給 RL 節點
+                    # 發布 3D 座標
                     target_point = Point()
-                    target_point.x = x_3d
-                    target_point.y = y_3d
-                    target_point.z = z_3d
+                    target_point.x = x_3d + 0.38
+                    target_point.y = y_3d + 0.2
+                    target_point.z = z_3d + 0.36
                     self.target_pub.publish(target_point)
 
                     # 取得類別名稱
                     cls_id = int(box.cls)
-                    cls_name = self.model.names[cls_id]
+                    cls_name = self.model.names[cls_id].lower() # 轉小寫保險一點
 
-                    # 終端機輸出
-                    self.get_logger().info(f"[{cls_name}] Dist: {z_3d:.3f}m | XYZ: ({x_3d:.3f}, {y_3d:.3f}, {z_3d:.3f})")
+                    # 👈 [新增] 根據類別名稱發布對應的 ID
+                    obj_id_msg = Int32()
+                    if 'cube' in cls_name:
+                        obj_id_msg.data = 0
+                    elif 'sphere' in cls_name:
+                        obj_id_msg.data = 1
+                    elif 'cylinder' in cls_name:
+                        obj_id_msg.data = 2
+                    else:
+                        continue # 如果抓到其他不相關的東西，就不發布 ID
 
-                    # --- 畫面繪製 (OpenCV) ---
+                    self.obj_type_pub.publish(obj_id_msg)
+
+                    # 終端機輸出 (順便印出 ID 方便除錯)
+                    self.get_logger().info(f"[{cls_name} (ID:{obj_id_msg.data})] Dist: {z_3d:.3f}m | XYZ: ({x_3d:.3f}, {y_3d:.3f}, {z_3d:.3f})")
+
+                    # --- 畫面繪製 ---
                     cv2.rectangle(color_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     cv2.circle(color_image, (u, v), 5, (0, 0, 255), -1)
 
@@ -160,7 +154,7 @@ class VisionNode(Node):
                     cv2.putText(color_image, label_text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     cv2.putText(color_image, coord_text, (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
-        # 將畫好的畫面發布出去，以便在 Host 端直接觀看
+        # 發布 debug 影像
         debug_msg = self.bridge.cv2_to_imgmsg(color_image, "bgr8")
         self.debug_img_pub.publish(debug_msg)
 

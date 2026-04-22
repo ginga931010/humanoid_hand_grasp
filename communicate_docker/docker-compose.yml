@@ -20,9 +20,8 @@ services:
     environment:
       - ROS_DOMAIN_ID=0  # 確保與之後的 AI Container 在同一個 DDS 網域
     command: >
-      bash -c "ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 1000000 & 
-                ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true"
-            
+      bash -c "ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 500000
+      & ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true"
     tty: true
     stdin_open: true
 
