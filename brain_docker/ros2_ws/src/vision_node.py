@@ -73,6 +73,35 @@ class VisionNode(Node):
 
         self.get_logger().info("🎯 視覺處理節點已啟動，等待 RealSense 影像輸入...")
 
+    def camera_to_world_transform(self, cam_x, cam_y, cam_z):
+        """
+        根據實體觀察：Isaac XYZ 對應 RealSense 的 X, Z, -Y
+        """
+        
+        # ==========================================
+        # 步驟 1：軸向對齊 (你的完美觀察)
+        # ==========================================
+        # 讓大腦的 X, Y, Z 對齊相機的軸
+        aligned_x = cam_x
+        aligned_y = cam_z
+        aligned_z = -cam_y
+
+        # ==========================================
+        # 步驟 2：加上平移偏移量 (Translation Offset)
+        # ==========================================
+        # ⚠️ 這裡非常重要！軸向對齊了，但原點還沒對齊。
+        # 這是「相機鏡頭中心」到「機械手 Base 原點」的直線距離 (單位：公尺)
+        # 請拿尺實際量測後填入 (以下為假設值，請務必修改)
+        OFFSET_X = 0.4   # 相機相對於 Base 在左右方向的偏移
+        OFFSET_Y = -0.64 # 相機相對於 Base 在前後方向的偏移 (例如相機在手掌後方20公分)
+        OFFSET_Z = 0.89  # 相機相對於 Base 在上下方向的偏移 (例如相機比手掌底部高15公分)
+
+        world_x = aligned_x + OFFSET_X
+        world_y = aligned_y + OFFSET_Y
+        world_z = aligned_z + OFFSET_Z
+
+        return float(world_x), float(world_y), float(world_z)
+
     def camera_info_callback(self, msg):
         if not self.intrinsics_ready:
             self.fx = msg.k[0]
@@ -83,7 +112,7 @@ class VisionNode(Node):
             self.get_logger().info(f"✅ 已成功取得相機內參: fx={self.fx:.2f}, fy={self.fy:.2f}")
 
     def sync_callback(self, color_msg, depth_msg):
-        self.get_logger().info("🔄 收到一組同步影像！正在檢查內參...")
+        # self.get_logger().info("🔄 收到一組同步影像！正在檢查內參...")
         
         if not self.intrinsics_ready:
             self.get_logger().warn("⚠️ 收到影像，但相機內參尚未就緒，捨棄此幀。")
@@ -119,10 +148,12 @@ class VisionNode(Node):
 
                     # 發布 3D 座標
                     target_point = Point()
-                    target_point.x = x_3d + 0.38
-                    target_point.y = y_3d + 0.2
-                    target_point.z = z_3d + 0.36
+                    # target_point.x = x_3d 
+                    # target_point.y = y_3d 
+                    # target_point.z = z_3d
+                    target_point.x, target_point.y, target_point.z = self.camera_to_world_transform(x_3d, y_3d, z_3d)
                     self.target_pub.publish(target_point)
+
 
                     # 取得類別名稱
                     cls_id = int(box.cls)
@@ -142,18 +173,18 @@ class VisionNode(Node):
                     self.obj_type_pub.publish(obj_id_msg)
 
                     # 終端機輸出 (順便印出 ID 方便除錯)
-                    self.get_logger().info(f"[{cls_name} (ID:{obj_id_msg.data})] Dist: {z_3d:.3f}m | XYZ: ({x_3d:.3f}, {y_3d:.3f}, {z_3d:.3f})")
+                    self.get_logger().info(f"[{cls_name} (ID:{obj_id_msg.data})] World XYZ: ({target_point.x:.3f}, {target_point.y:.3f}, {target_point.z:.3f})")
 
                     # --- 畫面繪製 ---
                     cv2.rectangle(color_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     cv2.circle(color_image, (u, v), 5, (0, 0, 255), -1)
 
-                    label_text = f"{cls_name} {z_3d:.2f}m"
-                    coord_text = f"X:{x_3d:.3f} Y:{y_3d:.3f} Z:{z_3d:.3f}"
-
+                    label_text = f"{cls_name}"
+                    # ✅ 讓螢幕上也顯示世界座標，方便你拿尺對照！
+                    coord_text = f"W_X:{target_point.x:.2f} W_Y:{target_point.y:.2f} W_Z:{target_point.z:.2f}"
+    
                     cv2.putText(color_image, label_text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     cv2.putText(color_image, coord_text, (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-
         # 發布 debug 影像
         debug_msg = self.bridge.cv2_to_imgmsg(color_image, "bgr8")
         self.debug_img_pub.publish(debug_msg)

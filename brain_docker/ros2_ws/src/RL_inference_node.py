@@ -224,7 +224,11 @@ class RLInferenceNode(Node):
         super().__init__('rl_inference_node')
         
         # 1. 初始化 ONNX Runtime
-        model_path = '/ros2_ws/src/policy.onnx'
+        # model_path = '/ros2_ws/src/policy.onnx'
+        # model_path = '/ros2_ws/src/12_step4-300.onnx'
+        
+        model_path = '/ros2_ws/src/13_Step5Ar0.08L2-200.onnx'
+
         providers = [
             ('TensorrtExecutionProvider', {
                 'device_id': 0,
@@ -263,7 +267,7 @@ class RLInferenceNode(Node):
             -0.523599
         ], dtype=np.float32)
 
-        self.action_alpha = 0.05
+        self.action_alpha = 0.1
 
         # ==========================================================
         # ★ 新增：PWM 與 Radian 轉換參數設定區
@@ -289,6 +293,28 @@ class RLInferenceNode(Node):
             1950.0,                          # Revolute_7
             1875.0,                          # Revolute_8
             1700.0                           # Revolute_29
+        ], dtype=np.float32)
+        # ==========================================================
+
+        # ==========================================================
+        # ★ 新增：STM32 回傳的 ADC (0~4095) 上下限映射參數
+        # ==========================================================
+        # 這是你在 STM32 端讀取到的實際最小/最大值。
+        # 之後請手動把手指凹到極限，把讀到的數值填入對應的位置 (例如 100 ~ 1000)
+        self.adc_min = np.array([
+            1950.0, 1615.0, 1940.0, 1530.0,   # Revolute_12, 14, 16, 18
+            1970.0, 1595.0, 2000.0, 1595.0,   # Revolute_20, 22, 24, 26
+            1465.0,                        # Revolute_7
+            1240.0,                        # Revolute_8
+            1470.0                         # Revolute_29
+        ], dtype=np.float32)
+
+        self.adc_max = np.array([
+            3055.0, 2620.0, 3110.0, 2570.0, 
+            3130.0, 2630.0, 3110.0, 2650.0, 
+            2700.0, 
+            2880.0, 
+            2475.0  
         ], dtype=np.float32)
         # ==========================================================
 
@@ -320,7 +346,7 @@ class RLInferenceNode(Node):
         # 現在這裡發布的會是 PWM 值了，但依據你的需求維持 Float32MultiArray
         self.target_pub = self.create_publisher(Float32MultiArray, '/target_angle', 10)
         
-        self.dt = 0.025 # 50Hz
+        self.dt = 0.025 # 40Hz
         self.timer = self.create_timer(self.dt, self.inference_loop)
 
     # ==========================================================
@@ -340,6 +366,20 @@ class RLInferenceNode(Node):
         # 2. 映射回 Radian
         return ratio * (r_max - r_min) + r_min
 
+    def adc_to_pwm(self, joint_idx, raw_adc):
+        """將 STM32 讀取到的原始 ADC 值轉換為對應的標準 PWM 值"""
+        a_min = self.adc_min[joint_idx]
+        a_max = self.adc_max[joint_idx]
+        p_min = self.pwm_min[joint_idx]
+        p_max = self.pwm_max[joint_idx]
+        
+        # 1. 算出在 ADC 範圍內的比例，並限制在 0~1 之間 (防止雜訊超幅)
+        ratio = (raw_adc - a_min) / (a_max - a_min)
+        ratio = max(0.0, min(1.0, ratio)) 
+        
+        # 2. 映射到你定義的標準 PWM 範圍
+        return ratio * (p_max - p_min) + p_min
+
     def rad_to_pwm(self, rad_array):
         """將模型算出的 11 維 Radian 陣列轉換為 PWM"""
         # 1. 算出佔比，並限制在 0~1 之間
@@ -356,14 +396,17 @@ class RLInferenceNode(Node):
         self.get_logger().info(f"🕹️ 收到控制指令：策略推論已 {status}")
 
     def joint_state_callback(self, msg):
-        # 接收來自 STM32 的 PWM (現在是 Float32MultiArray 格式)
-        # 這裡我們完全依賴「陣列的順序 (Index)」來對應關節，不再使用名稱
+        # 接收來自 STM32 的 ADC 數值 (Float32MultiArray)
         
         if len(msg.data) >= self.num_joints:
             for i in range(self.num_joints):
-                raw_pwm = msg.data[i]
-                # 將每個關節收到的 PWM 轉回 Radian，存入 current_pos
-                self.current_pos[i] = self.pwm_to_rad(i, raw_pwm)
+                raw_adc = msg.data[i]
+                
+                # 步驟 1: 先將 0-4095 區間的 ADC 轉換為標準 PWM
+                standard_pwm = self.adc_to_pwm(i, raw_adc)
+                
+                # 步驟 2: 再將標準 PWM 轉回 Radian 給模型使用
+                self.current_pos[i] = self.pwm_to_rad(i, standard_pwm)
                 
             self.received_joint = True
         else:
